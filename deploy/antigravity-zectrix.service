@@ -1,0 +1,18 @@
+[Unit]
+Description=Antigravity Quota Prediction Dashboard for ZECTRIX NOTE4
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/antigravity-zectrix/env
+ExecStart=/usr/local/bin/antigravity-zectrix
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/antigravity-zectrix
+
+[Install]
+WantedBy=multi-user.target

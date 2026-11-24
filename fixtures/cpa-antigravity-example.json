@@ -1,0 +1,10 @@
+{
+  "type": "antigravity",
+  "email": "developer@example.com",
+  "project_id": "your-gcp-project-id",
+  "access_token": "ya29.replace-with-cpa-access-token",
+  "refresh_token": "1//replace-with-cpa-refresh-token",
+  "expires_in": 3599,
+  "timestamp": 1795400000000,
+  "expired": "2026-11-24T15:30:00Z"
+}

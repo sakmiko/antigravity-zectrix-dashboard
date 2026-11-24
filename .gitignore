@@ -1,0 +1,7 @@
+/bin/
+/dist/
+*.png
+!assets/preview-final.png
+.env
+state.json
+*.key
