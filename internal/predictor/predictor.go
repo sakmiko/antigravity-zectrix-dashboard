@@ -29,15 +29,26 @@ type PoolPrediction struct {
 	History      []Point   `json:"history"`
 }
 
+type ComputeOptions struct {
+	PlanTierOverride         string
+	AccountEmail             string
+	KeepaliveEnabled         bool
+	KeepaliveIntervalSeconds int
+	PollIntervalSeconds      int
+}
+
 type Forecast struct {
-	UpdatedAt        time.Time      `json:"updated_at"`
-	Stale            bool           `json:"stale"`
-	PlanTier         string         `json:"plan_tier,omitempty"`
-	KeepaliveEnabled bool           `json:"keepalive_enabled,omitempty"`
-	Gemini           PoolPrediction `json:"gemini"`
-	Claude           PoolPrediction `json:"claude"`
-	Weekly           PoolPrediction `json:"weekly"`
-	Bottleneck       PoolPrediction `json:"bottleneck"`
+	UpdatedAt                time.Time      `json:"updated_at"`
+	Stale                    bool           `json:"stale"`
+	AccountEmail             string         `json:"account_email,omitempty"`
+	PlanTier                 string         `json:"plan_tier,omitempty"`
+	KeepaliveEnabled         bool           `json:"keepalive_enabled,omitempty"`
+	KeepaliveIntervalSeconds int            `json:"keepalive_interval_seconds,omitempty"`
+	PollIntervalSeconds      int            `json:"poll_interval_seconds,omitempty"`
+	Gemini                   PoolPrediction `json:"gemini"`
+	Claude                   PoolPrediction `json:"claude"`
+	Weekly                   PoolPrediction `json:"weekly"`
+	Bottleneck               PoolPrediction `json:"bottleneck"`
 }
 
 type State struct {
@@ -88,21 +99,28 @@ func (s *State) SaveAtomic(path string) error {
 	return os.Rename(tmp, path)
 }
 
-// Compute builds a runway & burn-rate forecast from recorded snapshots.
+// Compute builds a quota summary & burn-rate forecast from recorded snapshots.
 // It never fabricates predictions when no snapshots exist.
-func (s *State) Compute(now time.Time, staleAfter time.Duration, tierOverride string, keepaliveEnabled bool) *Forecast {
-	tier := resolvePlanTier(tierOverride, "")
+func (s *State) Compute(now time.Time, staleAfter time.Duration, opts ComputeOptions) *Forecast {
+	tier := resolvePlanTier(opts.PlanTierOverride, "")
 	if len(s.Snapshots) == 0 {
 		return &Forecast{
-			UpdatedAt:        now,
-			Stale:            true,
-			PlanTier:         tier,
-			KeepaliveEnabled: keepaliveEnabled,
+			UpdatedAt:                now,
+			Stale:                    true,
+			AccountEmail:             opts.AccountEmail,
+			PlanTier:                 tier,
+			KeepaliveEnabled:         opts.KeepaliveEnabled,
+			KeepaliveIntervalSeconds: opts.KeepaliveIntervalSeconds,
+			PollIntervalSeconds:      opts.PollIntervalSeconds,
 		}
 	}
 	latest := s.Snapshots[len(s.Snapshots)-1]
 	stale := now.Sub(latest.CapturedAt) > staleAfter
-	tier = resolvePlanTier(tierOverride, latest.PlanTier)
+	tier = resolvePlanTier(opts.PlanTierOverride, latest.PlanTier)
+	email := strings.TrimSpace(latest.AccountEmail)
+	if email == "" {
+		email = strings.TrimSpace(opts.AccountEmail)
+	}
 
 	gemPts := make([]Point, 0, len(s.Snapshots))
 	claPts := make([]Point, 0, len(s.Snapshots))
@@ -127,14 +145,17 @@ func (s *State) Compute(now time.Time, staleAfter time.Duration, tierOverride st
 
 	bottleneck := pickBottleneck(gem, cla)
 	return &Forecast{
-		UpdatedAt:        latest.CapturedAt,
-		Stale:            stale,
-		PlanTier:         tier,
-		KeepaliveEnabled: keepaliveEnabled,
-		Gemini:           gem,
-		Claude:           cla,
-		Weekly:           wk,
-		Bottleneck:       bottleneck,
+		UpdatedAt:                latest.CapturedAt,
+		Stale:                    stale,
+		AccountEmail:             email,
+		PlanTier:                 tier,
+		KeepaliveEnabled:         opts.KeepaliveEnabled,
+		KeepaliveIntervalSeconds: opts.KeepaliveIntervalSeconds,
+		PollIntervalSeconds:      opts.PollIntervalSeconds,
+		Gemini:                   gem,
+		Claude:                   cla,
+		Weekly:                   wk,
+		Bottleneck:               bottleneck,
 	}
 }
 
@@ -157,7 +178,6 @@ func predictPool(cur antigravity.PoolQuota, pts []Point, now time.Time) PoolPred
 	if !cur.Available {
 		return p
 	}
-	// Detect quota reset by either upward jump (>10pp) or upstream ResetAt advancing (>30m).
 	startIdx := 0
 	for i := 1; i < len(pts); i++ {
 		if pts[i].Pct-pts[i-1].Pct > 10.0 {
@@ -181,7 +201,6 @@ func predictPool(cur antigravity.PoolQuota, pts []Point, now time.Time) PoolPred
 		return p
 	}
 
-	// Weighted slope: 60% full-window average + 40% recent-segment burn rate
 	avgBurn := (first.Pct - last.Pct) / dtHours
 	recentBurn := avgBurn
 	prev := window[len(window)-2]
@@ -204,12 +223,20 @@ func predictPool(cur antigravity.PoolQuota, pts []Point, now time.Time) PoolPred
 	return p
 }
 
+// pickBottleneck picks the pool with the lowest remaining quota percentage
+// (breaking ties by shorter runway or earlier reset).
 func pickBottleneck(a, b PoolPrediction) PoolPrediction {
 	if !a.Available {
 		return b
 	}
 	if !b.Available {
 		return a
+	}
+	if math.Abs(a.RemainingPct-b.RemainingPct) > 0.05 {
+		if a.RemainingPct < b.RemainingPct {
+			return a
+		}
+		return b
 	}
 	if a.RunwayHours >= 0 && b.RunwayHours >= 0 {
 		if a.RunwayHours <= b.RunwayHours {
@@ -223,10 +250,7 @@ func pickBottleneck(a, b PoolPrediction) PoolPrediction {
 	if b.RunwayHours >= 0 {
 		return b
 	}
-	if a.RemainingPct <= b.RemainingPct {
-		return a
-	}
-	return b
+	return a
 }
 
 // FormatRunwayShort formats runway hours for compact bitmap displays (e.g. "4.5h", "23.0h", "3.2d", "--").
@@ -243,7 +267,7 @@ func FormatRunwayShort(hours float64) string {
 // FormatDurationCompact formats remaining duration like "3d 14h" or "4h 20m".
 func FormatDurationCompact(d time.Duration) string {
 	if d <= 0 {
-		return "0h"
+		return "0m"
 	}
 	hours := int(d.Hours())
 	days := hours / 24
@@ -252,5 +276,8 @@ func FormatDurationCompact(d time.Duration) string {
 		return fmt.Sprintf("%dd %dh", days, remH)
 	}
 	mins := int(d.Minutes()) % 60
+	if hours == 0 {
+		return fmt.Sprintf("%dm", mins)
+	}
 	return fmt.Sprintf("%dh %02dm", remH, mins)
 }

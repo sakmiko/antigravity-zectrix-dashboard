@@ -36,12 +36,13 @@ type PoolQuota struct {
 
 // Snapshot is a single verified observation of Antigravity quotas and plan tier.
 type Snapshot struct {
-	CapturedAt time.Time `json:"captured_at"`
-	PlanTier   string    `json:"plan_tier,omitempty"` // FREE, PLUS, PRO, ULTRA
-	ProjectID  string    `json:"project_id,omitempty"`
-	Gemini     PoolQuota `json:"gemini"`
-	Claude     PoolQuota `json:"claude"`
-	Weekly     PoolQuota `json:"weekly"`
+	CapturedAt   time.Time `json:"captured_at"`
+	AccountEmail string    `json:"account_email,omitempty"`
+	PlanTier     string    `json:"plan_tier,omitempty"` // FREE, PLUS, PRO, ULTRA
+	ProjectID    string    `json:"project_id,omitempty"`
+	Gemini       PoolQuota `json:"gemini"`
+	Claude       PoolQuota `json:"claude"`
+	Weekly       PoolQuota `json:"weekly"`
 }
 
 type CodeAssistInfo struct {

@@ -15,19 +15,10 @@ func TestRenderDashboardDimensionsAndTiers(t *testing.T) {
 		Name: "CLAUDE", RemainingPct: 38, BurnRatePctH: 8.5,
 		RunwayHours: 4.5, ExhaustAt: now.Add(270 * time.Minute),
 		ResetAt: now.Add(270 * time.Minute), Available: true,
-		History: []predictor.Point{
-			{Time: now.Add(-6 * time.Hour), Pct: 84},
-			{Time: now.Add(-3 * time.Hour), Pct: 61},
-			{Time: now, Pct: 38},
-		},
 	}
 	gem := predictor.PoolPrediction{
 		Name: "GEMINI", RemainingPct: 74, BurnRatePctH: 3.2,
 		RunwayHours: 23.0, ResetAt: now.Add(14 * time.Hour), Available: true,
-		History: []predictor.Point{
-			{Time: now.Add(-6 * time.Hour), Pct: 93},
-			{Time: now, Pct: 74},
-		},
 	}
 	wk := predictor.PoolPrediction{
 		Name: "WEEKLY", RemainingPct: 62, ResetAt: now.Add(86 * time.Hour), Available: true, RunwayHours: -1,
@@ -37,8 +28,16 @@ func TestRenderDashboardDimensionsAndTiers(t *testing.T) {
 	hashes := make(map[string]string)
 	for _, tier := range tiers {
 		fc := &predictor.Forecast{
-			UpdatedAt: now, PlanTier: tier, KeepaliveEnabled: true,
-			Gemini: gem, Claude: cla, Weekly: wk, Bottleneck: cla,
+			UpdatedAt:                now,
+			AccountEmail:             "developer@gmail.com",
+			PlanTier:                 tier,
+			KeepaliveEnabled:         true,
+			KeepaliveIntervalSeconds: 1800,
+			PollIntervalSeconds:      1800,
+			Gemini:                   gem,
+			Claude:                   cla,
+			Weekly:                   wk,
+			Bottleneck:               cla,
 		}
 		r1, err := RenderDashboard(fc, time.UTC)
 		if err != nil {

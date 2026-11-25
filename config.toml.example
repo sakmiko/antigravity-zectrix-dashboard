@@ -13,9 +13,7 @@ account_email = ""
 auth_cache_file = ""
 # 可选：AES-256-GCM 加密密钥文件（仅用于加密 auth_cache_file，不影响 CPA 源文件）
 encryption_key_file = ""
-# OAuth Client ID/Secret：仓库不内置凭据。
-# 若 CPA JSON 里没有 client_id/client_secret，而你需要让它自动刷新 token，
-# 就要在这里填自己手上那一份（或设 ANTIGRAVITY_OAUTH_CLIENT_ID/_SECRET 环境变量）。
+# 可选：自定义 OAuth Client ID/Secret（留空则自动使用内置 Antigravity 客户端凭证）
 oauth_client_id = ""
 oauth_client_secret = ""
 

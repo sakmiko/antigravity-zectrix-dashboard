@@ -311,7 +311,7 @@ func pollAndPredict(ctx context.Context, cfg *config.Config, store *auth.Store, 
 		log.Println("quota API returned 401; refreshing OAuth token and retrying once")
 		updated, rerr := store.RefreshToken(ctx, cred)
 		if rerr != nil {
-			return st.Compute(time.Now(), time.Duration(cfg.StaleAfterSeconds)*time.Second, cfg.PlanTier, cfg.Keepalive.Enabled), rerr
+			return st.Compute(time.Now(), time.Duration(cfg.StaleAfterSeconds)*time.Second, computeOpts(cfg, cred.Email)), rerr
 		}
 		cred = updated
 		_ = store.SaveCacheAtomic(cred)
@@ -321,11 +321,14 @@ func pollAndPredict(ctx context.Context, cfg *config.Config, store *auth.Store, 
 		if len(st.Snapshots) == 0 {
 			return nil, err
 		}
-		fc := st.Compute(time.Now(), time.Duration(cfg.StaleAfterSeconds)*time.Second, cfg.PlanTier, cfg.Keepalive.Enabled)
+		fc := st.Compute(time.Now(), time.Duration(cfg.StaleAfterSeconds)*time.Second, computeOpts(cfg, cred.Email))
 		fc.Stale = true
 		return fc, err
 	}
 
+	if cred.Email != "" && snap.AccountEmail == "" {
+		snap.AccountEmail = cred.Email
+	}
 	if snap.ProjectID != "" && snap.ProjectID != cred.ProjectID {
 		cred.ProjectID = snap.ProjectID
 		_ = store.SaveCacheAtomic(cred)
@@ -333,7 +336,20 @@ func pollAndPredict(ctx context.Context, cfg *config.Config, store *auth.Store, 
 
 	st.AppendAndPrune(*snap, cfg.HistoryMaxHours)
 	_ = st.SaveAtomic(cfg.StateFile)
-	return st.Compute(time.Now(), time.Duration(cfg.StaleAfterSeconds)*time.Second, cfg.PlanTier, cfg.Keepalive.Enabled), nil
+	return st.Compute(time.Now(), time.Duration(cfg.StaleAfterSeconds)*time.Second, computeOpts(cfg, cred.Email)), nil
+}
+
+func computeOpts(cfg *config.Config, email string) predictor.ComputeOptions {
+	if email == "" {
+		email = cfg.AccountEmail
+	}
+	return predictor.ComputeOptions{
+		PlanTierOverride:         cfg.PlanTier,
+		AccountEmail:             email,
+		KeepaliveEnabled:         cfg.Keepalive.Enabled,
+		KeepaliveIntervalSeconds: cfg.Keepalive.IntervalSeconds,
+		PollIntervalSeconds:      cfg.QuotaPollSeconds,
+	}
 }
 
 func runOneCycle(ctx context.Context, cfg *config.Config, store *auth.Store, agClient *antigravity.Client, pub *publisher.ZectrixClient, force bool) error {
@@ -370,9 +386,13 @@ func runPreview(cfg *config.Config, outPath, tierOverride string) error {
 	st, _ := predictor.LoadState(cfg.StateFile)
 	var fc *predictor.Forecast
 	if len(st.Snapshots) > 0 {
-		fc = st.Compute(now, time.Duration(cfg.StaleAfterSeconds)*time.Second, tier, cfg.Keepalive.Enabled)
+		opts := computeOpts(cfg, cfg.AccountEmail)
+		if tierOverride != "" {
+			opts.PlanTierOverride = tierOverride
+		}
+		fc = st.Compute(now, time.Duration(cfg.StaleAfterSeconds)*time.Second, opts)
 	} else {
-		fc = sampleForecast(now, tier, cfg.Keepalive.Enabled)
+		fc = sampleForecast(now, tier, cfg)
 	}
 	frame, err := render.RenderDashboard(fc, cfg.Location)
 	if err != nil {
@@ -386,7 +406,7 @@ func runPreview(cfg *config.Config, outPath, tierOverride string) error {
 	return nil
 }
 
-func sampleForecast(now time.Time, tierOverride string, keepalive bool) *predictor.Forecast {
+func sampleForecast(now time.Time, tierOverride string, cfg *config.Config) *predictor.Forecast {
 	tier := "PRO"
 	switch tierOverride {
 	case "free", "FREE":
@@ -399,34 +419,35 @@ func sampleForecast(now time.Time, tierOverride string, keepalive bool) *predict
 		tier = "ULTRA"
 	}
 
-	gemHist := []predictor.Point{
-		{Time: now.Add(-6 * time.Hour), Pct: 93},
-		{Time: now.Add(-4 * time.Hour), Pct: 87},
-		{Time: now.Add(-2 * time.Hour), Pct: 80},
-		{Time: now, Pct: 74},
-	}
-	claHist := []predictor.Point{
-		{Time: now.Add(-6 * time.Hour), Pct: 84},
-		{Time: now.Add(-4 * time.Hour), Pct: 69},
-		{Time: now.Add(-2 * time.Hour), Pct: 52},
-		{Time: now, Pct: 38},
-	}
 	cla := predictor.PoolPrediction{
 		Name: "CLAUDE", RemainingPct: 38, BurnRatePctH: 8.5,
 		RunwayHours: 4.5, ExhaustAt: now.Add(270 * time.Minute),
-		ResetAt: now.Add(270 * time.Minute), Available: true, History: claHist,
+		ResetAt: now.Add(270 * time.Minute), Available: true,
 	}
 	gem := predictor.PoolPrediction{
 		Name: "GEMINI", RemainingPct: 74, BurnRatePctH: 3.2,
 		RunwayHours: 23.0, ExhaustAt: now.Add(23 * time.Hour),
-		ResetAt: now.Add(13*time.Hour + 30*time.Minute), Available: true, History: gemHist,
+		ResetAt: now.Add(13*time.Hour + 30*time.Minute), Available: true,
 	}
 	wk := predictor.PoolPrediction{
 		Name: "WEEKLY", RemainingPct: 62, ResetAt: now.Add(86 * time.Hour),
 		Available: true, RunwayHours: -1,
 	}
+	email := cfg.AccountEmail
+	if email == "" {
+		email = "developer@gmail.com"
+	}
 	return &predictor.Forecast{
-		UpdatedAt: now, Stale: false, PlanTier: tier, KeepaliveEnabled: keepalive,
-		Gemini: gem, Claude: cla, Weekly: wk, Bottleneck: cla,
+		UpdatedAt:                now,
+		Stale:                    false,
+		AccountEmail:             email,
+		PlanTier:                 tier,
+		KeepaliveEnabled:         cfg.Keepalive.Enabled,
+		KeepaliveIntervalSeconds: cfg.Keepalive.IntervalSeconds,
+		PollIntervalSeconds:      cfg.QuotaPollSeconds,
+		Gemini:                   gem,
+		Claude:                   cla,
+		Weekly:                   wk,
+		Bottleneck:               cla,
 	}
 }

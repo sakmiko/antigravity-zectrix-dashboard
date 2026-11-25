@@ -169,6 +169,13 @@ internal/publisher/        ZECTRIX 推送、像素去重、限流
 
 ## 九、变更记录
 
+**v1.1.0 · 后续细化**
+
+- `predictor.Compute` 改为 `ComputeOptions` 入参，瓶颈池判定综合"剩余余额 + 余程 + 重置时刻"，并列时不再随意取首个
+- 看板布局重排：右栏数值与 RUNWAY 区重新分配留白，时间/速率标注不再互相挤压
+- 套餐档位与 keepalive 状态贯通到渲染层（`PlanTier` / `KeepaliveEnabled` 进 `Forecast`）
+- `--preview-tier` 与 `plan_tier=auto` 共用同一条判定链路
+
 **v1.1.0**
 
 - 新增 **TOML 配置**（`config.toml`）与**热更新**：改完保存即生效，无需重启
