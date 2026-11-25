@@ -1,0 +1,61 @@
+# =============================================================================
+# Antigravity ZECTRIX NOTE4 额度预测看板配置 (TOML 示例)
+# 使用方式：复制为 config.toml 或通过 --config / CONFIG_FILE 指定
+# 守护模式支持热更新：修改并保存此文件后自动生效（无需重启）
+# =============================================================================
+
+[auth]
+# CLIProxyAPI 的 Antigravity 登录 JSON 文件或目录（严格只读，绝不写回或加密原文件）
+cpa_auth_path = "/var/lib/antigravity-zectrix/antigravity-user.json"
+# 当 cpa_auth_path 为目录时，按邮箱过滤指定账号（留空则自动选最新修改的文件）
+account_email = ""
+# 刷新后的 OAuth 令牌独立缓存路径（留空默认在 state_file 同目录下生成 auth-cache.json）
+auth_cache_file = ""
+# 可选：AES-256-GCM 加密密钥文件（仅用于加密 auth_cache_file，不影响 CPA 源文件）
+encryption_key_file = ""
+# OAuth Client ID/Secret：仓库不内置凭据。
+# 若 CPA JSON 里没有 client_id/client_secret，而你需要让它自动刷新 token，
+# 就要在这里填自己手上那一份（或设 ANTIGRAVITY_OAUTH_CLIENT_ID/_SECRET 环境变量）。
+oauth_client_id = ""
+oauth_client_secret = ""
+
+[network]
+# 可选：HTTP/SOCKS5 代理地址
+http_proxy_url = ""
+
+[quota]
+base_url = "https://cloudcode-pa.googleapis.com"
+user_agent = ""
+poll_interval = "30m"
+auth_refresh_interval = "50m"
+pause_windows = ["01:00-07:00"]
+timezone = "Asia/Shanghai"
+state_file = "/var/lib/antigravity-zectrix/state.json"
+history_max_hours = 12
+stale_after = "90m"
+
+[keepalive]
+# 默认关闭；设为 true 并保存即可热更新开启保活
+enabled = false
+# 自定义保活周期：支持 "10m"、"30m"、"1800s"、"1h" 或纯秒数（最低 60s）
+interval = "30m"
+# token = 仅刷新 OAuth Token；session = OAuth + 轻量 loadCodeAssist 心跳（不调用任何推理接口）
+mode = "session"
+# 是否在 pause_windows 静默期间暂停保活（false 表示夜间继续保活凭证）
+respect_pause_windows = false
+
+[display]
+# 订阅套餐徽章：auto（自动识别）| free | plus | pro | ultra
+plan_tier = "auto"
+
+[zectrix]
+base_url = "https://cloud.zectrix.com"
+device_id = "your-device-id"
+api_key = "your-api-key"
+page_id = "1"
+dither = false
+min_push_interval = "60s"
+
+[hot_reload]
+enabled = true
+poll_interval = "5s"

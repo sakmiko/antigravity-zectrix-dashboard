@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,6 +25,7 @@ const (
 )
 
 type ZectrixClient struct {
+	mu              sync.Mutex
 	BaseURL         string
 	DeviceID        string
 	APIKey          string
@@ -37,21 +39,47 @@ type ZectrixClient struct {
 }
 
 func NewZectrixClient(baseURL, deviceID, apiKey, pageID string, dither bool, minIntervalSec int) *ZectrixClient {
+	z := &ZectrixClient{
+		HTTP: &http.Client{Timeout: 25 * time.Second},
+	}
+	z.UpdateConfig(baseURL, deviceID, apiKey, pageID, dither, minIntervalSec)
+	return z
+}
+
+func (z *ZectrixClient) UpdateConfig(baseURL, deviceID, apiKey, pageID string, dither bool, minIntervalSec int) {
 	if minIntervalSec < 60 {
 		minIntervalSec = 60
 	}
-	return &ZectrixClient{
-		BaseURL:         strings.TrimRight(baseURL, "/"),
-		DeviceID:        deviceID,
-		APIKey:          apiKey,
-		PageID:          pageID,
-		Dither:          dither,
-		MinPushInterval: time.Duration(minIntervalSec) * time.Second,
-		HTTP:            &http.Client{Timeout: 25 * time.Second},
-	}
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.BaseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	z.DeviceID = strings.TrimSpace(deviceID)
+	z.APIKey = strings.TrimSpace(apiKey)
+	z.PageID = strings.TrimSpace(pageID)
+	z.Dither = dither
+	z.MinPushInterval = time.Duration(minIntervalSec) * time.Second
+}
+
+func (z *ZectrixClient) SeedState(lastHash string, lastPushed time.Time) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.lastHash = lastHash
+	z.lastPushed = lastPushed
+}
+
+func (z *ZectrixClient) LastState() (string, time.Time) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.lastHash, z.lastPushed
 }
 
 func (z *ZectrixClient) Decide(hashHex string, now time.Time, force bool) Decision {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return z.decideLocked(hashHex, now, force)
+}
+
+func (z *ZectrixClient) decideLocked(hashHex string, now time.Time, force bool) Decision {
 	if !force && z.lastHash != "" && z.lastHash == hashHex {
 		return DecisionSkipSame
 	}
@@ -65,19 +93,29 @@ func (z *ZectrixClient) Publish(ctx context.Context, pngBytes []byte, hashHex st
 	if len(pngBytes) > MaxImageBytes {
 		return "", fmt.Errorf("rendered PNG (%d bytes) exceeds 2 MiB device limit", len(pngBytes))
 	}
+
+	z.mu.Lock()
 	now := time.Now()
-	dec := z.Decide(hashHex, now, force)
-	if dec != DecisionPublish {
+	if dec := z.decideLocked(hashHex, now, force); dec != DecisionPublish {
+		z.mu.Unlock()
 		return dec, nil
 	}
-	if z.DeviceID == "" || z.APIKey == "" {
+	baseURL := z.BaseURL
+	deviceID := z.DeviceID
+	apiKey := z.APIKey
+	pageID := z.PageID
+	dither := z.Dither
+	httpClient := z.HTTP
+	z.mu.Unlock()
+
+	if deviceID == "" || apiKey == "" {
 		return "", errors.New("ZECTRIX_DEVICE_ID and ZECTRIX_API_KEY must be configured")
 	}
 
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	_ = mw.WriteField("pageId", z.PageID)
-	_ = mw.WriteField("dither", strconv.FormatBool(z.Dither))
+	_ = mw.WriteField("pageId", pageID)
+	_ = mw.WriteField("dither", strconv.FormatBool(dither))
 	fw, err := mw.CreateFormFile("images", "antigravity-dashboard.png")
 	if err != nil {
 		return "", err
@@ -89,15 +127,15 @@ func (z *ZectrixClient) Publish(ctx context.Context, pngBytes []byte, hashHex st
 		return "", err
 	}
 
-	url := fmt.Sprintf("%s/open/v1/devices/%s/display/image", z.BaseURL, z.DeviceID)
+	url := fmt.Sprintf("%s/open/v1/devices/%s/display/image", baseURL, deviceID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &body)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
-	req.Header.Set("X-API-Key", z.APIKey)
+	req.Header.Set("X-API-Key", apiKey)
 
-	resp, err := z.HTTP.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("zectrix push request: %w", err)
 	}
@@ -107,7 +145,9 @@ func (z *ZectrixClient) Publish(ctx context.Context, pngBytes []byte, hashHex st
 		return "", fmt.Errorf("zectrix push HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
+	z.mu.Lock()
 	z.lastHash = hashHex
 	z.lastPushed = now
+	z.mu.Unlock()
 	return DecisionPublish, nil
 }

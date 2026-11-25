@@ -6,14 +6,16 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/sakmiko/antigravity-zectrix-dashboard/internal/antigravity"
 )
 
 type Point struct {
-	Time time.Time `json:"time"`
-	Pct  float64   `json:"pct"`
+	Time    time.Time `json:"time"`
+	Pct     float64   `json:"pct"`
+	ResetAt time.Time `json:"reset_at,omitempty"`
 }
 
 type PoolPrediction struct {
@@ -28,16 +30,20 @@ type PoolPrediction struct {
 }
 
 type Forecast struct {
-	UpdatedAt  time.Time      `json:"updated_at"`
-	Stale      bool           `json:"stale"`
-	Gemini     PoolPrediction `json:"gemini"`
-	Claude     PoolPrediction `json:"claude"`
-	Weekly     PoolPrediction `json:"weekly"`
-	Bottleneck PoolPrediction `json:"bottleneck"`
+	UpdatedAt        time.Time      `json:"updated_at"`
+	Stale            bool           `json:"stale"`
+	PlanTier         string         `json:"plan_tier,omitempty"`
+	KeepaliveEnabled bool           `json:"keepalive_enabled,omitempty"`
+	Gemini           PoolPrediction `json:"gemini"`
+	Claude           PoolPrediction `json:"claude"`
+	Weekly           PoolPrediction `json:"weekly"`
+	Bottleneck       PoolPrediction `json:"bottleneck"`
 }
 
 type State struct {
-	Snapshots []antigravity.Snapshot `json:"snapshots"`
+	Snapshots    []antigravity.Snapshot `json:"snapshots"`
+	LastPushHash string                 `json:"last_push_hash,omitempty"`
+	LastPushedAt time.Time              `json:"last_pushed_at,omitempty"`
 }
 
 func LoadState(path string) (*State, error) {
@@ -84,21 +90,28 @@ func (s *State) SaveAtomic(path string) error {
 
 // Compute builds a runway & burn-rate forecast from recorded snapshots.
 // It never fabricates predictions when no snapshots exist.
-func (s *State) Compute(now time.Time, staleAfter time.Duration) *Forecast {
+func (s *State) Compute(now time.Time, staleAfter time.Duration, tierOverride string, keepaliveEnabled bool) *Forecast {
+	tier := resolvePlanTier(tierOverride, "")
 	if len(s.Snapshots) == 0 {
-		return &Forecast{UpdatedAt: now, Stale: true}
+		return &Forecast{
+			UpdatedAt:        now,
+			Stale:            true,
+			PlanTier:         tier,
+			KeepaliveEnabled: keepaliveEnabled,
+		}
 	}
 	latest := s.Snapshots[len(s.Snapshots)-1]
 	stale := now.Sub(latest.CapturedAt) > staleAfter
+	tier = resolvePlanTier(tierOverride, latest.PlanTier)
 
 	gemPts := make([]Point, 0, len(s.Snapshots))
 	claPts := make([]Point, 0, len(s.Snapshots))
 	for _, sn := range s.Snapshots {
 		if sn.Gemini.Available {
-			gemPts = append(gemPts, Point{Time: sn.CapturedAt, Pct: sn.Gemini.RemainingPct})
+			gemPts = append(gemPts, Point{Time: sn.CapturedAt, Pct: sn.Gemini.RemainingPct, ResetAt: sn.Gemini.ResetAt})
 		}
 		if sn.Claude.Available {
-			claPts = append(claPts, Point{Time: sn.CapturedAt, Pct: sn.Claude.RemainingPct})
+			claPts = append(claPts, Point{Time: sn.CapturedAt, Pct: sn.Claude.RemainingPct, ResetAt: sn.Claude.ResetAt})
 		}
 	}
 
@@ -114,13 +127,23 @@ func (s *State) Compute(now time.Time, staleAfter time.Duration) *Forecast {
 
 	bottleneck := pickBottleneck(gem, cla)
 	return &Forecast{
-		UpdatedAt:  latest.CapturedAt,
-		Stale:      stale,
-		Gemini:     gem,
-		Claude:     cla,
-		Weekly:     wk,
-		Bottleneck: bottleneck,
+		UpdatedAt:        latest.CapturedAt,
+		Stale:            stale,
+		PlanTier:         tier,
+		KeepaliveEnabled: keepaliveEnabled,
+		Gemini:           gem,
+		Claude:           cla,
+		Weekly:           wk,
+		Bottleneck:       bottleneck,
 	}
+}
+
+func resolvePlanTier(override, detected string) string {
+	ov := strings.ToLower(strings.TrimSpace(override))
+	if ov != "" && ov != "auto" {
+		return strings.ToUpper(ov)
+	}
+	return strings.ToUpper(strings.TrimSpace(detected))
 }
 
 func predictPool(cur antigravity.PoolQuota, pts []Point, now time.Time) PoolPrediction {
@@ -134,10 +157,14 @@ func predictPool(cur antigravity.PoolQuota, pts []Point, now time.Time) PoolPred
 	if !cur.Available {
 		return p
 	}
-	// Only use points since the most recent quota reset (upward jump > 10pp).
+	// Detect quota reset by either upward jump (>10pp) or upstream ResetAt advancing (>30m).
 	startIdx := 0
 	for i := 1; i < len(pts); i++ {
 		if pts[i].Pct-pts[i-1].Pct > 10.0 {
+			startIdx = i
+			continue
+		}
+		if !pts[i].ResetAt.IsZero() && !pts[i-1].ResetAt.IsZero() && pts[i].ResetAt.Sub(pts[i-1].ResetAt) > 30*time.Minute {
 			startIdx = i
 		}
 	}
@@ -171,7 +198,9 @@ func predictPool(cur antigravity.PoolQuota, pts []Point, now time.Time) PoolPred
 	p.BurnRatePctH = math.Round(burn*10) / 10
 	runway := cur.RemainingPct / burn
 	p.RunwayHours = runway
-	p.ExhaustAt = now.Add(time.Duration(runway * float64(time.Hour)))
+	if runway > 0 && runway <= 24*365 {
+		p.ExhaustAt = now.Add(time.Duration(runway * float64(time.Hour)))
+	}
 	return p
 }
 

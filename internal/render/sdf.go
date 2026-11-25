@@ -201,6 +201,14 @@ func blendSDFRoundedRect(canvas []float64, w, h int, x, y, rw, rh, radius, color
 	}
 }
 
+func blendSDFRoundedRectBorder(canvas []float64, w, h int, x, y, rw, rh, radius, borderW, fillColor, borderColor float64) {
+	blendSDFRoundedRect(canvas, w, h, x, y, rw, rh, radius, borderColor)
+	innerR := math.Max(0, radius-borderW)
+	if rw > 2*borderW && rh > 2*borderW {
+		blendSDFRoundedRect(canvas, w, h, x+borderW, y+borderW, rw-2*borderW, rh-2*borderW, innerR, fillColor)
+	}
+}
+
 func blendPillBar(canvas []float64, w, h int, x, y, bw, bh, pct, bgColor, fgColor float64) {
 	r := bh / 2.0
 	blendSDFRoundedRect(canvas, w, h, x, y, bw, bh, r, bgColor)

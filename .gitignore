@@ -1,7 +1,17 @@
+# 构建产物
 /bin/
 /dist/
-*.png
-!assets/preview-final.png
+*.log
+.gocache/
+.gotmp/
+
+# 本地配置与敏感文件
 .env
+config.toml
+auth-cache.json
 state.json
 *.key
+
+# 渲染产物不入库，但仓库自带的预览图要保留
+*.png
+!assets/preview-*.png
